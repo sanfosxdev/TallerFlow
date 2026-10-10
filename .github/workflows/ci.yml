@@ -18,7 +18,8 @@ jobs:
         run: |
           npm run google:build
           git diff --exit-code google/Domain.gs || { echo "google/Domain.gs está desactualizado. Corré 'npm run google:build' y commiteá el resultado."; exit 1; }
-      - run: npm test
+      - name: Tests de dominio + componentes
+        run: npm test
       - run: npm run build
       - name: Chequear sintaxis del gateway
         run: node --check api/index.js
