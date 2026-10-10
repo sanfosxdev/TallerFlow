@@ -109,6 +109,7 @@ npm run google:build      # regenera google/Domain.gs desde el dominio compartid
 - Verificá que el propietario de Apps Script tenga acceso al calendario elegido y autorización de Sheets/Calendar.
 - Hacé reservas, cancelaciones, consentimientos, recordatorios y restauración de copia en un entorno de prueba.
 - Configurá exportaciones/backups, revisión diaria de la cola y responsable de responder a clientes.
+- Activá el health-check del scheduler (#23): monitor GET cada 15 min a `https://<APP_ORIGIN>/api?action=ping` (UptimeRobot o cron-job.org) con alerta ante status ≠ 200; el backup diario (#10) también depende de los triggers y Google puede silenciarlos sin aviso.
 - Revisá el aviso de privacidad y el mecanismo de ejercicio de derechos con asesoramiento adecuado a la jurisdicción del taller.
 
 Para el procedimiento completo, consultar `docs/DESPLIEGUE.md` y `docs/SEGURIDAD-Y-OPERACION.md`.
