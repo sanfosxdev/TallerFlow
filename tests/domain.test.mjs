@@ -99,8 +99,9 @@ test('la lista de espera exige permiso, un día laboral válido y un servicio si
 });
 
 test('la frontera de acciones públicas es restrictiva',()=>{
- for(const a of ['catalog','slots','book','waitlist'])assert.equal(allowed(a,'public'),true);
- for(const a of ['snapshot','transition','message','automate','consent'])assert.equal(a==='audit'?false:allowed(a,'public'),false);
+ // #23: health y automate se vuelven seguras en modo público (sólo conteos / reintentos idempotentes).
+ for(const a of ['catalog','slots','book','waitlist','health','automate'])assert.equal(allowed(a,'public'),true);
+ for(const a of ['snapshot','transition','message','consent','audit','waitlistClose'])assert.equal(allowed(a,'public'),false,a+' no debe ser pública');
  assert.equal(allowed('snapshot','admin'),true);
 });
 
@@ -194,4 +195,21 @@ test('consentimientos separados: ops para turnos, marketing opt-in para recupera
  assert.equal(enqueue(legacy,'x3','cL','Recuperación 90 días','Hola'),null,'marketing nunca implícito');
  automate(legacy,now);
  assert.ok(!legacy.messages.some(m=>m.clientId==='cL'&&m.kind.startsWith('Recuperación')));
+});
+
+// #23 Observabilidad: métricas de salud (cola Calendar + mensajes pendientes) vía dispatch('health').
+test('health expone la cola de sincronización de Calendar y mensajes pendientes',()=>{
+ const db=blank();
+ assert.deepEqual(dispatch(db,'health',{},{},'admin'),{calendarBacklog:0,pendingMessages:0});
+ const date=nextWorkday(localDate(now));
+ booking(db,payload({requestId:'request-h1000001'}),now);
+ transition(db,{id:db.appointments[0].id,status:'confirmed',actor:'admin'},now);
+ // Confirmado => syncStatus 'pending' (cola de Calendar). Un error sume igual.
+ let h=dispatch(db,'health',{},{},'admin');
+ assert.equal(h.calendarBacklog,1);assert.ok(h.pendingMessages>=1,'confirmación en cola de WhatsApp');
+ db.appointments.push({...db.appointments[0],id:'aX',requestId:'request-h1000002',syncStatus:'error'});
+ h=dispatch(db,'health',{},{},'admin');
+ assert.equal(h.calendarBacklog,2,'los eventos con error cuentan como backlog');
+ db.appointments.forEach(a=>a.syncStatus='synced');
+ assert.equal(dispatch(db,'health',{},{},'admin').calendarBacklog,0,'la cola drenó');
 });
