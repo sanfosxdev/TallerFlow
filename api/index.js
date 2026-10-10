@@ -22,6 +22,8 @@ export default async function handler(req,res){
  const {action,payload={}}=body;
  if(action==='logout'){res.setHeader('Set-Cookie','tf_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0');return res.json({ok:true,data:{}});}
  if(action==='session')return res.json({ok:true,data:{authenticated:admin(req)}});
+ // #23 Observabilidad: ping del scheduler. Sin secreto: expone sólo estado/antigüedad (no filas ni datos personales).
+ if(action==='ping'){const r=await fetch(`${process.env.GAS_URL}?action=ping`,{redirect:'follow',signal:AbortSignal.timeout(10000)}).then(async x=>{const t=await x.text();try{return JSON.parse(t);}catch{throw new Error(`El backend respondió de forma inesperada (HTTP ${x.status}). Revisá el despliegue de Apps Script.`);}}).catch(e=>{if(e.name==='TimeoutError')throw new Error('El backend no respondió al ping a tiempo.');throw e;});return res.status(r.ok?200:400).json(r);}
  async function challenge(){
  if(!process.env.TURNSTILE_SECRET_KEY)throw new Error('Protección antispam no configurada.');
  const v=await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify',{method:'POST',body:new URLSearchParams({secret:process.env.TURNSTILE_SECRET_KEY,response:body.challenge||''}),signal:AbortSignal.timeout(10000)}).then(r=>r.json());

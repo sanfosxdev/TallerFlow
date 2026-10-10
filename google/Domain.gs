@@ -18,7 +18,7 @@ function nextWorkday(date=localDate()){let d=new Date(date+'T12:00:00-03:00');d.
 function cleanText(v,max=120){return String(v??'').trim().slice(0,max);}
 function normalizePhone(v){const p=String(v??'').replace(/\D/g,'');if(p.length<10||p.length>15)throw new Error('Ingresá un teléfono con código de país (10 a 15 dígitos).');return p;}
 function normalizePlate(v){let p=String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!/^[A-Z]{3}\d{3}$|^[A-Z]{2}\d{3}[A-Z]{2}$/.test(p))throw new Error('Patente inválida. Usá ABC123 o AB123CD.');return p;}
-function allowed(action,role){return role==='admin'||['catalog','slots','book','waitlist'].includes(action);}
+function allowed(action,role){return role==='admin'||['catalog','slots','book','waitlist','health','automate'].includes(action);}
 /** Auditoría append-only: acciones sensibles y mutaciones excepcionales (p. ej. borrado de PII). */
 function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];const actor=['admin','public'].includes(p.actor)?p.actor:'system';db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor,detail:cleanText(p.detail,300)});return {ok:true};}
 function overlaps(a,b){return a.start<b.end&&a.end>b.start;}
@@ -98,11 +98,14 @@ function transition(db,p,now=new Date()){
  enqueue(db,`gap:${a.id}:${w.id}`,wc.id,'Hueco disponible',`Hola ${wc.name}, se liberó un lugar para ${service.name} el ${w.date} a las ${a.time}. Respondé si te interesa; el horario no queda reservado hasta completar la solicitud.`);
  }}return {ok:true};
 }
+/** Métricas de salud derivadas del estado (sin side effects). Cola Calendar = turnos confirmados pendientes de sincronizar o con error. */
+function healthMetrics(db){const backlog=db.appointments.filter(a=>['pending','error'].includes(a.syncStatus)).length;return {calendarBacklog:backlog,pendingMessages:(db.messages||[]).filter(m=>m.status==='pending').length};}
 function dispatch(db,action,p={},now=new Date(),role='public'){
  if(action==='catalog')return {config:db.config,services:db.services};
  if(action==='slots')return available(db,p.date,p.serviceId,now);
  if(action==='book')return booking(db,p,now);
  if(action==='snapshot')return db;
+ if(action==='health')return healthMetrics(db);
  if(action==='transition')return transition(db,{...p,actor:role},now);
  if(action==='automate')return automate(db,now);
  if(action==='consent'){const c=db.clients.find(c=>c.id===p.id);if(!c)throw new Error('Cliente inexistente.');

@@ -62,4 +62,14 @@ function notifyQueue(){const count=locked(()=>readDb().messages.filter(m=>m.stat
  const token=props().getProperty('TELEGRAM_BOT_TOKEN'),chat=props().getProperty('TELEGRAM_CHAT_ID');if(token&&chat){const r=UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:'post',contentType:'application/json',payload:JSON.stringify({chat_id:chat,text}),muteHttpExceptions:true});if(r.getResponseCode()!==200)throw new Error('Falló aviso Telegram.');}
  if(email||(token&&chat))props().setProperty('DIGEST_DATE',key);
 }
-function health(){console.log(JSON.stringify({lastRun:props().getProperty('LAST_RUN'),lastError:props().getProperty('LAST_ERROR'),rows:locked(()=>{const d=readDb();return Object.fromEntries(Object.keys(TABLES).filter(k=>k!=='config').map(k=>[k,d[k].length]));})}));}
+/** Mejora #23: estado del scheduler para health-checks externos. Umbral por defecto 45 min (3 corridas perdidas del trigger de 15 min). */
+function schedulerStatus(){const lastRun=props().getProperty('LAST_RUN')||'',lastError=props().getProperty('LAST_ERROR')||'';
+ const maxMin=Math.max(1,Number(props().getProperty('PING_MAX_MINUTES'))||45);
+ let ageMinutes=null,fresh=false;if(lastRun){const parsed=Date.parse(lastRun);if(!Number.isNaN(parsed))ageMinutes=Math.max(0,Math.round((Date.now()-parsed)/60000));}
+ if(ageMinutes!==null)fresh=ageMinutes<=maxMin&&!lastError;
+ return {ok:fresh,lastRun,lastError,ageMinutes,maxAgeMinutes:maxMin};}
+function doGet(e){
+ if(e?.parameter?.action==='ping'){try{return response({ok:true,data:schedulerStatus()});}catch(err){return response({ok:false,error:err.message||'Error interno.'});}}
+ return response({ok:false,error:'Usá ?action=ping o POST con sobre firmado.'});
+}
+function health(){const d=locked(()=>readDb());console.log(JSON.stringify({scheduler:schedulerStatus(),...healthMetrics(d),rows:Object.fromEntries(Object.keys(TABLES).filter(k=>k!=='config').map(k=>[k,d[k].length]))}));}
