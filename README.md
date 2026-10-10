@@ -61,6 +61,7 @@ El flujo de producción de datos es deliberadamente sencillo: el navegador no se
 - [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md) — configuración paso a paso de Google, Vercel, Turnstile, Calendar y notificaciones.
 - [`docs/SEGURIDAD-Y-OPERACION.md`](docs/SEGURIDAD-Y-OPERACION.md) — privacidad, roles, amenazas, copias, incidentes y límites MVP.
 - [`docs/PRUEBAS-Y-ROADMAP.md`](docs/PRUEBAS-Y-ROADMAP.md) — pruebas, criterios de aceptación y evolución sugerida.
+- [`docs/SUGERENCIAS-DE-MEJORA.md`](docs/SUGERENCIAS-DE-MEJORA.md) — revisión del código actual con mejoras priorizadas (P0/P1/P2).
 
 ## Estructura
 
