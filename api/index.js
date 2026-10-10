@@ -13,9 +13,11 @@ function admin(req){const t=cookie(req).tf_session||'',i=t.lastIndexOf('.');if(i
 function password(p){const [salt,hash]=(process.env.ADMIN_PASSWORD_HASH||'').split(':');if(!salt||!hash||typeof p!=='string'||p.length>200)return false;return safe(crypto.scryptSync(p,salt,64).toString('hex'),hash);}
 export default async function handler(req,res){
  res.setHeader('Cache-Control','no-store');
+ // #23: el ping también acepta GET sin cuerpo/origen, para health-checks externos simples (UptimeRobot/curl) apuntados a este gateway.
+ if(req.method==='GET'&&req.query?.action==='ping'){req.method='POST';req.body={action:'ping'};}
  if(req.method!=='POST')return res.status(405).json({ok:false,error:'Usá POST.'});
  if(!process.env.APP_ORIGIN||!process.env.SESSION_SECRET||!process.env.GAS_SECRET||!process.env.GAS_URL)return res.status(503).json({ok:false,error:'Integración aún no configurada.'});
- if(req.headers.origin!==process.env.APP_ORIGIN)return res.status(403).json({ok:false,error:'Origen no permitido.'});
+ if(req.headers.origin&&req.headers.origin!==process.env.APP_ORIGIN)return res.status(403).json({ok:false,error:'Origen no permitido.'});
  try{
  const body=typeof req.body==='string'?JSON.parse(req.body):req.body||{};
  if(JSON.stringify(body).length>10000)return res.status(413).json({ok:false,error:'Solicitud demasiado grande.'});
@@ -23,7 +25,7 @@ export default async function handler(req,res){
  if(action==='logout'){res.setHeader('Set-Cookie','tf_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0');return res.json({ok:true,data:{}});}
  if(action==='session')return res.json({ok:true,data:{authenticated:admin(req)}});
  // #23 Observabilidad: ping del scheduler. Sin secreto: expone sólo estado/antigüedad (no filas ni datos personales).
- if(action==='ping'){const r=await fetch(`${process.env.GAS_URL}?action=ping`,{redirect:'follow',signal:AbortSignal.timeout(10000)}).then(async x=>{const t=await x.text();try{return JSON.parse(t);}catch{throw new Error(`El backend respondió de forma inesperada (HTTP ${x.status}). Revisá el despliegue de Apps Script.`);}}).catch(e=>{if(e.name==='TimeoutError')throw new Error('El backend no respondió al ping a tiempo.');throw e;});return res.status(r.ok?200:400).json(r);}
+ if(action==='ping'){const r=await fetch(`${process.env.GAS_URL}?action=ping`,{redirect:'follow',signal:AbortSignal.timeout(10000)}).then(async x=>{const t=await x.text();try{return JSON.parse(t);}catch{throw new Error(`El backend respondió de forma inesperada (HTTP ${x.status}). Revisá el despliegue de Apps Script.`);}}).catch(e=>{if(e.name==='TimeoutError')throw new Error('El backend no respondió al ping a tiempo.');throw e;});if(!r.ok||!r.data)return res.status(400).json({ok:false,error:r.error||'Respuesta de ping inesperada del backend.'});return res.status(r.data.ok?200:400).json(r);}
  async function challenge(){
  if(!process.env.TURNSTILE_SECRET_KEY)throw new Error('Protección antispam no configurada.');
  const v=await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify',{method:'POST',body:new URLSearchParams({secret:process.env.TURNSTILE_SECRET_KEY,response:body.challenge||''}),signal:AbortSignal.timeout(10000)}).then(r=>r.json());
