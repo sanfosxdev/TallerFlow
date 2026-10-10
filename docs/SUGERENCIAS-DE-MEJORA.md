@@ -104,9 +104,9 @@ Es para el entorno de desarrollo del proveedor; mover a configuración local (`v
 | 5 | CI con tests + diff de Domain.gs | `.github/workflows` | Bajo | ✅ Implementado (`ci.yml`) |
 | 6 | Parseo tolerante de respuesta GAS | client.mjs (fetch) | Bajo | ✅ Implementado |
 | 7 | Rate-limit de login por IP | api/index.js | Medio | ✅ Implementado (contador deslizante en memoria, 10 intentos/15 min por IP, responde 429 antes de Turnstile/scrypt) |
-| 8 | Separar consentimientos ops/marketing | domain.mjs + UI | Medio | Pendiente |
+| 8 | Separar consentimientos ops/marketing | domain.mjs + UI | Medio | ✅ Implementado (`consentOps`/`consentMarketing`; marketing opt-in para Recuperación; legado `consent=true` migra a ops) |
 | 9 | Split de main.jsx + tests de componentes | src/ | Alto | Pendiente |
-| 10 | Backup diario automático del Sheet | Backend.gs trigger | Bajo | Pendiente |
+| 10 | Backup diario automático del Sheet | Backend.gs trigger | Bajo | ✅ Implementado (trigger horario + xlsx diario, retención 7 copias, carpeta opcional `BACKUP_FOLDER_ID`) |
 
 **Scripts agregados a package.json:** `npm run password` (hash scrypt), `npm run deploy` (`vercel deploy --prod`), `npm run clasp:push` (`clasp push`).
 
@@ -116,5 +116,11 @@ Es para el entorno de desarrollo del proveedor; mover a configuración local (`v
 - **#6 parseo tolerante:** el `catch` de `r.json()` en `src/client.mjs` ahora distingue 502/504 ("el servidor tardó en responder") de otras respuestas no-JSON ("respuesta válida… reintentá"), y se usa `data?.ok`/`data?.error` para objetos inesperados. Nada más "toca" la red, así que el cambio es seguro.
 - **#19 CI:** `.github/workflows/ci.yml` — Node 20, `npm ci`, regenera `google/Domain.gs` y falla si hay diff (invariante de código generado), corre `npm test`, `npm run build` y `node --check api/index.js`.
 - **#20 scripts:** alias `password`, `deploy` y `clasp:push` en package.json.
+- **#2 feriados:** `CONFIG.holidays` como fuente única compartida demo/Google; `available()` devuelve `[]` en feriado y `booking`/waitlist rechazan con mensaje claro.
+- **#3 expiración:** solicitudes `requested` cuyo `end` pasó pasan a estado terminal `expired` (liberan agenda histórica sin tocar turnos futuros ni generar mensajes; auditadas por `system`).
+- **#7 rate-limit login:** contador deslizante en memoria por IP en `api/index.js` (10 intentos / 15 min); responde 429 antes de validar Turnstile o derivar scrypt.
+- **#4 auditoría:** tabla `audit` append-only (id, at, action, targetId, actor, detail) que registra transiciones, consentimientos, aperturas/envíos de mensajes y vencimientos automáticos; migración tolerante para hojas existentes.
+- **#8 consentimientos separados:** `consentOps` (recordatorios/confirmaciones del turno, requisito para reservar) y `consentMarketing` (campañas de recuperación 90/180 días, opt-in explícito nunca activado por defecto). El formulario público muestra dos checkboxes; el panel muestra el estado por alcance y permite revocar cada uno (`dispatch('consent',{scope})`). Datos legados: `consent=true` sin campo explícito se interpreta como ops otorgado.
+- **#10 backup diario:** `hourlyBackup()` se dispara una vez por día vía trigger horario de `installTriggers()` (evita el límite de 6 ejecuciones diarias de triggers diarios en cuentas gratuitas); exporta el spreadsheet a `.xlsx` con fecha en el nombre, con retención de 7 copias (`setTrashed`) y propiedad opcional `BACKUP_FOLDER_ID` para una carpeta de Drive dedicada. Fallas se registran en Logs sin interrumpir el scheduler.
 
 Para cada ítem P0/P1 se recomienda abrir issue propia con criterio de aceptación y prueba asociada; ninguno requiere re-arquitecturar, y todos preservan las seis invariantes del README.

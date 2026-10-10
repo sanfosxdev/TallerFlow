@@ -34,8 +34,16 @@ function doPost(e){try{
  });return response({ok:true,data});
  }catch(err){console.error(err);return response({ok:false,error:err.message||'Error interno.'});}}
 function setup(){locked(()=>{const ss=spreadsheet();for(const name in TABLES){let sh=ss.getSheetByName(name)||ss.insertSheet(name);sh.getRange(1,1,1,TABLES[name].length).setValues([TABLES[name]]);sh.setFrozenRows(1);sh.getRange(1,1,1,TABLES[name].length).setFontWeight('bold').setBackground('#d9ead3');}if(ss.getSheetByName('config').getLastRow()<2)saveDb({config:CONFIG,services:SERVICES,clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]});});installTriggers();}
-function installTriggers(){for(const t of ScriptApp.getProjectTriggers())if(t.getHandlerFunction()==='scheduledRun')ScriptApp.deleteTrigger(t);ScriptApp.newTrigger('scheduledRun').timeBased().everyMinutes(15).create();}
+function installTriggers(){for(const t of ScriptApp.getProjectTriggers()){const h=t.getHandlerFunction();if(h==='scheduledRun'||h==='hourlyBackup')ScriptApp.deleteTrigger(t);}ScriptApp.newTrigger('scheduledRun').timeBased().everyMinutes(15).create();ScriptApp.newTrigger('hourlyBackup').timeBased().everyHours(1).create();}
 function scheduledRun(){try{locked(()=>{const db=readDb();if(!Array.isArray(db.audit))db.audit=[];automate(db);saveDb(db);});syncCalendar();notifyQueue();props().setProperty('LAST_RUN',new Date().toISOString());props().deleteProperty('LAST_ERROR');}catch(e){props().setProperty('LAST_ERROR',e.message);console.error(e);}}
+/** Mejora #10: backup diario en formato xlsx con retención de 7 copias. Opcional: propiedad BACKUP_FOLDER_ID para una carpeta de Drive dedicada. */
+function backupFolder(){const id=props().getProperty('BACKUP_FOLDER_ID');return id?DriveApp.getFolderById(id):DriveApp.getRootFolder();}
+function runBackup(){const ss=SpreadsheetApp.getActiveSpreadsheet(),name=ss.getName(),stamp=Utilities.formatDate(new Date(),Session.getScriptTimeZone(),'yyyy-MM-dd');
+ const file=backupFolder().createFile(Utilities.newBlob(ss.getBlob().getBytes(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',name+'-backup-'+stamp+'.xlsx'));
+ let backups=[];const files=backupFolder().getFilesByType(MimeType.GOOGLE_SHEETS);while(files.hasNext()){const f=files.next();if(f.getName()===name)backups.push(f);}
+ backups.sort((a,b)=>b.getDate().getTime()-a.getDate().getTime());for(let i=7;i<backups.length;i++)backups[i].setTrashed(true);
+ return {ok:true,name:file.getName(),kept:Math.min(7,backups.length)};}
+function hourlyBackup(){try{const last=props().getProperty('LAST_BACKUP');if(last&&last.slice(0,10)===Utilities.formatDate(new Date(),Session.getScriptTimeZone(),'yyyy-MM-dd'))return;const r=runBackup();props().setProperty('LAST_BACKUP',new Date().toISOString());console.log('Backup:',r.name);}catch(e){console.error('Backup falló:',e.message);}}
 /** Calendar is secondary. Sheet slots remain the source of truth. */
 function syncCalendar(){const id=props().getProperty('CALENDAR_ID');if(!id)return;const calendar=CalendarApp.getCalendarById(id);if(!calendar)throw new Error('Calendar no accesible.');
  // Lock avoids concurrent trigger reconciliation. Calendar errors never invalidate a booking.
