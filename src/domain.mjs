@@ -19,7 +19,7 @@ export function normalizePhone(v){const p=String(v??'').replace(/\D/g,'');if(p.l
 export function normalizePlate(v){let p=String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!/^[A-Z]{3}\d{3}$|^[A-Z]{2}\d{3}[A-Z]{2}$/.test(p))throw new Error('Patente inválida. Usá ABC123 o AB123CD.');return p;}
 export function allowed(action,role){return role==='admin'||['catalog','slots','book','waitlist'].includes(action);}
 /** Auditoría append-only: acciones sensibles y mutaciones excepcionales (p. ej. borrado de PII). */
-export function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor:p.actor==='admin'?'admin':'public',detail:cleanText(p.detail,300)});return {ok:true};}
+export function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];const actor=['admin','public'].includes(p.actor)?p.actor:'system';db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor,detail:cleanText(p.detail,300)});return {ok:true};}
 export function overlaps(a,b){return a.start<b.end&&a.end>b.start;}
 export function available(db,date,serviceId,now=new Date()){
  const service=db.services.find(s=>s.id===serviceId); if(!service)throw new Error('Servicio inexistente.');
@@ -36,19 +36,31 @@ export function available(db,date,serviceId,now=new Date()){
  if(busy.length<db.config.capacity)slots.push({time:`${hh}:${mm}`,start,end});}
  return slots;
 }
+/** Tipo de consentimiento requerido por cada clase de mensaje. kindMarketing: campañas de recuperación (90/180 días). */
+export function consentRequired(kind){return String(kind||'').startsWith('Recuperación')?'marketing':'ops';}
+export function hasConsent(c,kind){if(!c)return false;const req=consentRequired(kind);
+ // Compatibilidad con datos previos al consentimiento separado: consent=true sin consentimiento operativo explícito implica ops otorgado.
+ if(req==='ops')return c.consentOps===undefined?c.consent===true:c.consentOps===true;
+ return c.consentMarketing===true;}
 export function enqueue(db,key,clientId,kind,text,appointmentId=''){
- const c=db.clients.find(c=>c.id===clientId);if(!c?.consent||db.messages.some(m=>m.key===key))return null;
+ const c=db.clients.find(c=>c.id===clientId);if(!hasConsent(c,kind)||db.messages.some(m=>m.key===key))return null;
  const message={id:uid(),key,clientId,kind,text,appointmentId,status:'pending',createdAt:new Date().toISOString(),sentAt:''};db.messages.push(message);return message;
 }
+/** Aplica consentimientos del formulario público. Backward compatible: `consent`/`consentOps` habilita mensajes operativos; `consentMarketing` es opt-in explícito y nunca se activa por defecto. */
+export function applyConsent(c,p,now=new Date()){const ops=p.consentOps!==undefined?p.consentOps===true:p.consent===true;
+ c.consentOps=ops;c.consent=c.consentOps;c.consentMarketing=p.consentMarketing===true;
+ if(ops||c.consentMarketing)c.consentAt=now.toISOString();return c;}
 export function booking(db,p,now=new Date()){
+ // El consentimiento operativo es requisito para reservar (confirmaciones/recordatorios del turno). Marketing es opt-in aparte.
+ if(p.consentOps!==true&&p.consent!==true)throw new Error('Necesitás autorizar los mensajes sobre tu turno para solicitar hora.');
  const old=db.appointments.find(a=>a.requestId===p.requestId);if(old)return {id:old.id,status:old.status,start:old.start};
  if((db.config.holidays||[]).includes(p.date))throw new Error('Ese día es feriado y el taller no atiende. Elegí otra fecha.');
  if(!/^[\w-]{8,100}$/.test(p.requestId||''))throw new Error('Identificador de reserva inválido.');
  const name=cleanText(p.name,80),brand=cleanText(p.brand,60),model=cleanText(p.model,60),phone=normalizePhone(p.phone),plate=normalizePlate(p.plate),year=Number(p.year);
  if(name.length<2||!brand||!model||!Number.isInteger(year)||year<1950||year>new Date().getFullYear()+1)throw new Error('Revisá nombre, marca, modelo y año.');
  const slot=available(db,p.date,p.serviceId,now).find(s=>s.time===p.time);if(!slot)throw new Error('Ese horario ya no está disponible. Elegí otro.');
- let client=db.clients.find(c=>c.phone===phone); if(!client){client={id:uid(),name,phone,consent:false,consentAt:'',createdAt:now.toISOString()};db.clients.push(client);}
- client.name=name;if(p.consent===true){client.consent=true;client.consentAt=now.toISOString();}
+ let client=db.clients.find(c=>c.phone===phone); if(!client){client={id:uid(),name,phone,consent:false,consentAt:'',consentOps:false,consentMarketing:false,createdAt:now.toISOString()};db.clients.push(client);}
+ client.name=name;applyConsent(client,p,now);
  let vehicle=db.vehicles.find(v=>v.plate===plate);if(vehicle&&vehicle.clientId!==client.id)throw new Error('La patente ya está registrada. Contactá al taller para verificar la titularidad.');
  if(!vehicle){vehicle={id:uid(),clientId:client.id,brand,model,year,plate};db.vehicles.push(vehicle);}
  const a={id:uid(),requestId:p.requestId,clientId:client.id,vehicleId:vehicle.id,serviceId:p.serviceId,...slot,status:'requested',notes:cleanText(p.notes,500),createdAt:now.toISOString(),eventId:'',syncStatus:'none'};db.appointments.push(a);
@@ -92,15 +104,23 @@ export function dispatch(db,action,p={},now=new Date(),role='public'){
  if(action==='snapshot')return db;
  if(action==='transition')return transition(db,{...p,actor:role},now);
  if(action==='automate')return automate(db,now);
- if(action==='consent'){const c=db.clients.find(c=>c.id===p.id);if(!c)throw new Error('Cliente inexistente.');c.consent=p.consent===true;c.consentAt=now.toISOString();audit(db,{action:'consent',targetId:c.id,actor:role,detail:p.consent===true?'otorgado':'revocado'},now);if(!c.consent)db.messages.filter(m=>m.clientId===c.id&&['pending','opened'].includes(m.status)).forEach(m=>m.status='void');return {ok:true};}
- if(action==='message'){const m=db.messages.find(m=>m.id===p.id);if(!m)throw new Error('Mensaje inexistente.');if(!db.clients.find(c=>c.id===m.clientId)?.consent)throw new Error('Cliente sin consentimiento.');if(!['opened','sent'].includes(p.status)||['void','sent'].includes(m.status))throw new Error('Estado no permitido.');m.status=p.status;if(p.status==='sent')m.sentAt=now.toISOString();audit(db,{action:'message',targetId:m.id,actor:role,detail:p.status},now);return {ok:true};}
+ if(action==='consent'){const c=db.clients.find(c=>c.id===p.id);if(!c)throw new Error('Cliente inexistente.');
+  // Consentimientos separados: scope 'ops' (recordatorios/confirmaciones) y 'marketing' (recuperación 90/180). Sin scope = operativo (retrocompatible).
+  const scope=p.scope==='marketing'?'marketing':'ops',field=scope==='marketing'?'consentMarketing':'consentOps',granted=p.consent===true;
+  c[field]=granted;if(scope==='ops')c.consent=granted;
+  c.consentAt=(granted||c.consentOps||c.consentMarketing)?now.toISOString():'';
+  audit(db,{action:'consent',targetId:c.id,actor:role,detail:`${scope}:${granted?'otorgado':'revocado'}`},now);
+  const voidKinds=scope==='marketing'?['Recuperación']:['Solicitud','Confirmación','Recordatorio','Seguimiento','Cancelación','Hueco disponible'];
+  if(!granted)db.messages.filter(m=>m.clientId===c.id&&voidKinds.some(k=>String(m.kind).startsWith(k))&&['pending','opened'].includes(m.status)).forEach(m=>m.status='void');
+  return {ok:true};}
+ if(action==='message'){const m=db.messages.find(m=>m.id===p.id);if(!m)throw new Error('Mensaje inexistente.');if(!hasConsent(db.clients.find(c=>c.id===m.clientId),m.kind))throw new Error('Cliente sin consentimiento para este tipo de mensaje.');if(!['opened','sent'].includes(p.status)||['void','sent'].includes(m.status))throw new Error('Estado no permitido.');m.status=p.status;if(p.status==='sent')m.sentAt=now.toISOString();audit(db,{action:'message',targetId:m.id,actor:role,detail:p.status},now);return {ok:true};}
  if(action==='waitlist'){
  const phone=normalizePhone(p.phone),name=cleanText(p.name,80);if(name.length<2||p.consent!==true)throw new Error('Nombre y consentimiento obligatorios.');if(!db.services.some(s=>s.id===p.serviceId)||!/^\d{4}-\d{2}-\d{2}$/.test(p.date))throw new Error('Servicio o fecha inválidos.');
  if((db.config.holidays||[]).includes(p.date))throw new Error('Ese día es feriado y el taller no atiende. Elegí otra fecha.');
  const waitDay=new Date(p.date+'T12:00:00-03:00'),maxDay=new Date(now);maxDay.setDate(maxDay.getDate()+db.config.horizon);
  if(localDate(waitDay)!==p.date||p.date<localDate(now)||p.date>localDate(maxDay)||!db.config.weekdays.includes(waitDay.getDay()))throw new Error('Elegí un día hábil disponible dentro de los próximos 60 días.');
  if(available(db,p.date,p.serviceId,now).length)throw new Error('Ese día todavía tiene horarios disponibles. Elegí uno o probá otra fecha.');
- let c=db.clients.find(c=>c.phone===phone);if(!c){c={id:uid(),phone,name,consent:true,consentAt:now.toISOString(),createdAt:now.toISOString()};db.clients.push(c);}else{c.name=name;c.consent=true;c.consentAt=now.toISOString();}
+ let c=db.clients.find(c=>c.phone===phone);if(!c){c={id:uid(),phone,name,consent:true,consentAt:now.toISOString(),consentOps:true,consentMarketing:false,createdAt:now.toISOString()};db.clients.push(c);}else{c.name=name;applyConsent(c,{consent:true},now);}
  let item=db.waitlist.find(w=>w.clientId===c.id&&w.date===p.date&&w.serviceId===p.serviceId&&w.status==='active');if(!item){item={id:uid(),clientId:c.id,serviceId:p.serviceId,date:p.date,status:'active',createdAt:now.toISOString()};db.waitlist.push(item);}return {ok:true,id:item.id};
  }
  if(action==='waitlistClose'){const w=db.waitlist.find(w=>w.id===p.id);if(!w)throw new Error('Registro inexistente.');w.status='closed';return {ok:true};}
@@ -111,7 +131,7 @@ export function seed(now=new Date()){
  const db={config:{...CONFIG},services:SERVICES.map(s=>({...s})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]};
  const names=['Martín Rodríguez','Lucía Fernández','Diego Suárez','Camila Torres','Pablo Méndez','Sofía García','Nicolás Ríos','Valentina López'];
  const cars=[['Volkswagen','Gol','AB123CD'],['Toyota','Corolla','AC456EF'],['Ford','Focus','AD789GH'],['Peugeot','208','AE234IJ'],['Renault','Sandero','AF567KL'],['Fiat','Cronos','AG890MN'],['Chevrolet','Onix','AH345OP'],['Honda','Fit','AI678QR']];
- names.forEach((name,i)=>{db.clients.push({id:'c'+i,name,phone:'54911000000'+String(i).padStart(2,'0'),consent:i!==4,consentAt:now.toISOString(),createdAt:now.toISOString()});db.vehicles.push({id:'v'+i,clientId:'c'+i,brand:cars[i][0],model:cars[i][1],plate:cars[i][2],year:2017+i%6});const d=new Date(now);d.setDate(d.getDate()-(i<4?20+i*8:95+(i-4)*35));db.history.push({id:'h'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:SERVICES[i].id,date:d.toISOString(),km:42000+i*7500,notes:'Servicio de demostración. Control general realizado.',appointmentId:''});});
+ names.forEach((name,i)=>{db.clients.push({id:'c'+i,name,phone:'54911000000'+String(i).padStart(2,'0'),consent:i!==4,consentOps:i!==4,consentMarketing:i<3,consentAt:now.toISOString(),createdAt:now.toISOString()});db.vehicles.push({id:'v'+i,clientId:'c'+i,brand:cars[i][0],model:cars[i][1],plate:cars[i][2],year:2017+i%6});const d=new Date(now);d.setDate(d.getDate()-(i<4?20+i*8:95+(i-4)*35));db.history.push({id:'h'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:SERVICES[i].id,date:d.toISOString(),km:42000+i*7500,notes:'Servicio de demostración. Control general realizado.',appointmentId:''});});
  const date=nextWorkday(localDate(now));[0,1,2,3].forEach((i)=>{const time=['09:00','10:30','12:00','15:00'][i],start=new Date(date+'T'+time+':00-03:00').toISOString();db.appointments.push({id:'a'+i,requestId:'seed000'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:SERVICES[i===2?3:i].id,time,start,end:new Date(new Date(start).getTime()+SERVICES[i===2?3:i].duration*60000).toISOString(),status:i===3?'requested':'confirmed',notes:'',createdAt:now.toISOString(),eventId:'',syncStatus:'demo'});});
  const waitDate=nextWorkday(date);for(let i=0;i<9;i++){const time=String(9+i).padStart(2,'0')+':00',start=new Date(waitDate+'T'+time+':00-03:00').toISOString(),ci=i%4;db.appointments.push({id:'b'+i,requestId:'seedB000'+i,clientId:'c'+ci,vehicleId:'v'+ci,serviceId:'aceite',time,start,end:new Date(new Date(start).getTime()+60000*60).toISOString(),status:'confirmed',notes:'',createdAt:now.toISOString(),eventId:'',syncStatus:'demo'});}
  db.waitlist.push({id:'w0',clientId:'c6',serviceId:'aceite',date:waitDate,status:'active',createdAt:now.toISOString()});automate(db,now);return db;

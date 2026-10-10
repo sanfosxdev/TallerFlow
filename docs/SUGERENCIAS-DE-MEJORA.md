@@ -98,12 +98,12 @@ Es para el entorno de desarrollo del proveedor; mover a configuración local (`v
 | # | Cambio | Dónde | Esfuerzo | Estado |
 |---|--------|-------|----------|--------|
 | 1 | `clearRange` antes de reescribir tablas | Backend.gs `saveDb` | Bajo | ✅ Implementado |
-| 2 | Feriados configurables | domain.mjs + docs | Bajo | Pendiente |
-| 3 | Expirar `requested` vencidos | `automate()` | Medio | Pendiente |
-| 4 | Tabla `audit` append-only | TABLES + dispatch | Medio | Pendiente |
+| 2 | Feriados configurables | domain.mjs + docs | Bajo | ✅ Implementado (`CONFIG.holidays`, valida `available`/`booking`/waitlist) |
+| 3 | Expirar `requested` vencidos | `automate()` | Medio | ✅ Implementado (estado `expired`, terminal; no genera mensajes; auditoría `system`) |
+| 4 | Tabla `audit` append-only | TABLES + dispatch | Medio | ✅ Implementado (transition/consent/message/vencimientos; actor admin/public/system; migración tolerante) |
 | 5 | CI con tests + diff de Domain.gs | `.github/workflows` | Bajo | ✅ Implementado (`ci.yml`) |
 | 6 | Parseo tolerante de respuesta GAS | client.mjs (fetch) | Bajo | ✅ Implementado |
-| 7 | Rate-limit de login por IP | api/index.js | Medio | Pendiente |
+| 7 | Rate-limit de login por IP | api/index.js | Medio | ✅ Implementado (contador deslizante en memoria, 10 intentos/15 min por IP, responde 429 antes de Turnstile/scrypt) |
 | 8 | Separar consentimientos ops/marketing | domain.mjs + UI | Medio | Pendiente |
 | 9 | Split de main.jsx + tests de componentes | src/ | Alto | Pendiente |
 | 10 | Backup diario automático del Sheet | Backend.gs trigger | Bajo | Pendiente |

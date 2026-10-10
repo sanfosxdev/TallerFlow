@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SERVICES,CONFIG,seed,localDate,nextWorkday,normalizePhone,normalizePlate,available,booking,transition,automate,enqueue,allowed,dispatch} from '../src/domain.mjs';
+import {SERVICES,CONFIG,seed,localDate,nextWorkday,normalizePhone,normalizePlate,available,booking,transition,automate,enqueue,allowed,dispatch,consentRequired,hasConsent} from '../src/domain.mjs';
 const now=new Date('2026-10-03T09:00:00-03:00');
 function blank(){return {config:{...CONFIG},services:SERVICES.map(x=>({...x})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]};}
 function payload(extra={}){return {requestId:'request-12345678',name:'Ana Pérez',phone:'5491112345678',brand:'Toyota',model:'Corolla',year:2022,plate:'AB123CD',date:nextWorkday(localDate(now)),time:'09:00',serviceId:'aceite',consent:true,...extra};}
@@ -39,9 +39,13 @@ test('reserva necesita datos válidos, horario libre y consentimiento booleano c
  assert.throws(()=>booking(db,payload({phone:'4'}),now),/teléfono/);
 });
 
-test('consentimiento revocable controla creación de notificaciones',()=>{
- const db=blank(),res=booking(db,payload({consent:false}),now);
- assert.equal(db.clients[0].consent,false);assert.equal(db.messages.length,0);
+test('consentimiento operativo es requisito para reservar; sin autorización no hay notificaciones',()=>{
+ // El consentimiento ops es condición de la reserva (el cliente necesita confirmaciones de su turno).
+ assert.throws(()=>booking(blank(),payload({consent:false}),now),/autorizar/i);
+ // Un cliente existente que revoca ops sigue siendo atendido, pero no recibe mensajes.
+ const db=blank();booking(db,payload(),now);dispatch(db,'consent',{id:db.clients[0].id,consent:false},now,'admin');
+ db.messages=[];
+ assert.equal(db.clients[0].consent,false);assert.equal(db.clients[0].consentOps,false);
  assert.equal(enqueue(db,'test',db.clients[0].id,'Prueba','No enviar'),null);
 });
 
@@ -121,7 +125,7 @@ test('automate expira solicitudes requested vencidas, libera slots pasados y no 
  // Un slot pasado ya no bloquea: available lo filtra por now igualmente.
  assert.ok(!available(db,payload().date,'aceite',late).some(s=>s.time==='09:00'));
  // Solicitud futura NO vence: invariante 2 (sólo administración confirma/cancela turnos vigentes).
- const db2=blank();booking(db2,payload({requestId:'request-99887766'}),now);
+ const db2=blank();booking(db2,{...payload(),date:nextWorkday(localDate(new Date(now.getTime()+5*86400000))),requestId:'request-99887766'},now);
  automate(db2,new Date(now.getTime()+3600000));
  assert.equal(db2.appointments[0].status,'requested');
  // El admin puede cancelar explícitamente una solicitud pendiente.
@@ -136,9 +140,58 @@ test('auditoría append-only registra transiciones, consentimientos y mensajes c
  assert.ok(kinds.includes('transition')&&kinds.includes('consent'));
  assert.equal(db.audit.find(x=>x.action==='transition').detail,'requested→confirmed');
  assert.equal(db.audit.find(x=>x.action==='transition').actor,'admin');
- assert.equal(db.audit.find(x=>x.action==='consent').detail,'revocado');
+ assert.equal(db.audit.find(x=>x.action==='consent').detail,'ops:revocado');
  // Datos legados sin tabla audit no rompen el dominio.
  const legacy={...blank()};delete legacy.audit;
- assert.equal(transition(legacy,{id:res.id,status:'completed',actor:'admin'},now).ok,true);
+ const legacyRes=booking(legacy,payload({requestId:'request-55443322'}),now);
+ assert.equal(transition(legacy,{id:legacyRes.id,status:'confirmed',actor:'admin'},now).ok,true);
  assert.equal(legacy.audit.length,1);
+});
+
+test('consentimientos separados: ops para turnos, marketing opt-in para recuperación',()=>{
+ // Marketing es explícito: la reserva con consentimiento sólo habilita mensajes operativos.
+ const db=blank();booking(db,payload({consent:true}),now);
+ assert.equal(db.clients[0].consentOps,true);assert.equal(db.clients[0].consentMarketing,false);
+ assert.ok(db.messages.some(m=>m.kind==='Solicitud'),'recordatorio operativo sí se crea');
+ automate(db,now);
+ assert.ok(!db.messages.some(m=>m.kind.startsWith('Recuperación')),'sin marketing no hay campañas');
+ // Alta voluntaria de marketing → recién ahí se genera la campaña 90 días (el cliente tiene historial a -120 días y sin turnos futuros).
+ dispatch(db,'consent',{id:db.clients[0].id,consent:true,scope:'marketing'},now,'public');
+ assert.equal(db.clients[0].consentMarketing,true);
+ db.history.push({id:'hOld',clientId:db.clients[0].id,vehicleId:db.vehicles[0].id,serviceId:'aceite',date:new Date(now.getTime()-120*86400000).toISOString(),km:50000,notes:'',appointmentId:''});
+ transition(db,{id:db.appointments[0].id,status:'cancelled',actor:'admin'},now);
+ automate(db,now);
+ assert.ok(db.messages.some(m=>m.kind.startsWith('Recuperación')&&m.status==='pending'));
+ // Revocar marketing anula sólo Recuperación; los operativos ya emitidos siguen vivos.
+ dispatch(db,'consent',{id:db.clients[0].id,consent:false,scope:'marketing'},now,'admin');
+ assert.equal(db.messages.filter(m=>m.kind.startsWith('Recuperación')&&m.status==='void').length,1);
+ assert.equal(db.messages.filter(m=>m.kind==='Solicitud'&&['pending','opened'].includes(m.status)).length,0,'la Solicitud pasó a void por cancelarse el turno (regla de transiciones), no por la revocación de marketing');
+ assert.equal(db.messages.filter(m=>m.kind==='Solicitud').length,1,'el consentimiento de marketing no anuló mensajes operativos');
+ assert.equal(db.clients[0].consentOps,true);
+ // La revocación de marketing no borra el flag consentOps del cliente (los flags quedan independientes).
+ assert.ok(db.audit.some(x=>x.action==='consent'&&x.detail==='marketing:revocado'));
+ // El gate de envío (message opened/sent) respeta el scope por tipo de mensaje: la Recuperación quedó anulada y no puede marcarse enviada.
+ const rec=db.messages.find(m=>m.kind.startsWith('Recuperación'));
+ assert.equal(rec.status,'void');
+ assert.throws(()=>dispatch(db,'message',{id:rec.id,status:'sent'},now,'admin'),/Estado no permitido|sin consentimiento/);
+ // Un segundo turno confirmado genera Confirmación operativa aunque marketing esté revocado.
+ booking(db,payload({requestId:'request-99887766'}),now);
+ transition(db,{id:db.appointments[1].id,status:'confirmed',actor:'admin'},now);
+ assert.ok(db.messages.some(m=>m.kind==='Confirmación'&&m.status==='pending'),'ops sigue habilitado con marketing revocado');
+ assert.throws(()=>booking(db,payload({requestId:'request-55554444',consent:false,time:'16:30'}),now),/autorizar/i);
+ // Revocar ops anula los operativos pendientes; marketing sigue revocado (independiente).
+ dispatch(db,'consent',{id:db.clients[0].id,consent:false},now,'admin');
+ assert.equal(db.messages.filter(m=>['Solicitud','Confirmación'].includes(m.kind)&&m.status==='void').length,3,'dos Solicitudes + una Confirmación anuladas por revocar ops');
+ assert.equal(db.clients[0].consentMarketing,false);
+ assert.equal(db.clients[0].consentOps,false);
+ assert.ok(db.audit.some(x=>x.action==='consent'&&x.detail==='ops:revocado'));
+ // La reserva otorga consentimiento ops explícito (queda registrado en la ficha del cliente).
+ assert.equal(db.clients[0].consentOps,false);assert.equal(db.clients[0].consent,false);
+ // Datos legados (sólo consent=true) conservan mensajes operativos pero nunca reciben marketing.
+ const legacy=blank();legacy.clients.push({id:'cL',name:'Legado',phone:'5491122233344',consent:true,consentAt:'',createdAt:''});
+ legacy.history.push({id:'hL',clientId:'cL',vehicleId:'',serviceId:'aceite',date:new Date(now.getTime()-100*86400000).toISOString(),km:10,notes:'',appointmentId:''});
+ assert.ok(enqueue(legacy,'x2','cL','Confirmación','Turno confirmado'),'ops heredado desde consent=true');
+ assert.equal(enqueue(legacy,'x3','cL','Recuperación 90 días','Hola'),null,'marketing nunca implícito');
+ automate(legacy,now);
+ assert.ok(!legacy.messages.some(m=>m.clientId==='cL'&&m.kind.startsWith('Recuperación')));
 });
