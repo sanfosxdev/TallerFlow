@@ -1,7 +1,7 @@
 /** TallerFlow. Requires Advanced Google Sheets service (identifier Sheets). */
 const TABLES={
  config:['id','value'],services:['id','name','category','duration','price','icon','description'],
- clients:['id','name','phone','consent','consentAt','createdAt'],vehicles:['id','clientId','brand','model','year','plate'],
+ clients:['id','name','phone','consent','consentOps','consentMarketing','consentAt','createdAt'],vehicles:['id','clientId','brand','model','year','plate'],
  appointments:['id','requestId','clientId','vehicleId','serviceId','time','start','end','status','notes','createdAt','eventId','syncStatus'],
  history:['id','appointmentId','clientId','vehicleId','serviceId','date','km','notes'],
  messages:['id','key','clientId','kind','text','appointmentId','status','createdAt','sentAt'],
