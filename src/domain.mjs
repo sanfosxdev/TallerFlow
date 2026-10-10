@@ -10,14 +10,17 @@ export const SERVICES = [
  {id:'electricidad',name:'Electricidad',category:'Electricidad',duration:90,price:35000,icon:'Zap',description:'Revisión de luces, cableado y alternador.'},
  {id:'previaje',name:'Revisión pre-viaje',category:'Seguridad',duration:90,price:40000,icon:'Route',description:'Un chequeo integral antes de salir a la ruta.'}
 ];
-export const CONFIG={name:'TallerFlow',phone:'5491100000000',address:'Av. del Taller 123 · Buenos Aires',timezone:'America/Argentina/Buenos_Aires',open:9,close:18,weekdays:[1,2,3,4,5],holidays:['2026-12-24','2026-12-25','2026-12-31','2027-01-01'],requestExpireHours:48,capacity:1,slotMinutes:30,horizon:60};
+export const CONFIG={name:'TallerFlow',phone:'5491100000000',address:'Av. del Taller 123 · Buenos Aires',timezone:'America/Argentina/Buenos_Aires',currency:'ARS',open:9,close:18,weekdays:[1,2,3,4,5],holidays:['2026-12-24','2026-12-25','2026-12-31','2027-01-01'],requestExpireHours:48,capacity:1,slotMinutes:30,horizon:60};
 export function uid(){return 'tf_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);}
 export function localDate(d=new Date()){if(typeof Utilities!=='undefined')return Utilities.formatDate(d,CONFIG.timezone,'yyyy-MM-dd');return new Intl.DateTimeFormat('en-CA',{timeZone:CONFIG.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(d);}
 export function nextWorkday(date=localDate()){let d=new Date(date+'T12:00:00-03:00');d.setDate(d.getDate()+1);while(!CONFIG.weekdays.includes(d.getDay()))d.setDate(d.getDate()+1);return localDate(d);}
 export function cleanText(v,max=120){return String(v??'').trim().slice(0,max);}
 export function normalizePhone(v){const p=String(v??'').replace(/\D/g,'');if(p.length<10||p.length>15)throw new Error('Ingresá un teléfono con código de país (10 a 15 dígitos).');return p;}
 export function normalizePlate(v){let p=String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!/^[A-Z]{3}\d{3}$|^[A-Z]{2}\d{3}[A-Z]{2}$/.test(p))throw new Error('Patente inválida. Usá ABC123 o AB123CD.');return p;}
-export function allowed(action,role){return role==='admin'||['catalog','slots','book','waitlist','health','automate'].includes(action);}
+// #22 Contrato único de acciones (fuente de verdad para Vercel, Apps Script y demo).
+// publicActions: las únicas que el gateway puede aceptar sin sesión; 'automate' corre sólo por trigger interno (nunca expuesto al cliente).
+export const ACTIONS={public:new Set(['catalog','slots','book','waitlist','health']),adminOnly:new Set(['snapshot','transition','consent','message','waitlistClose','audit'])};
+export function allowed(action,role){return role==='admin'||ACTIONS.public.has(action)||action==='automate';}
 /** Auditoría append-only: acciones sensibles y mutaciones excepcionales (p. ej. borrado de PII). */
 export function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];const actor=['admin','public'].includes(p.actor)?p.actor:'system';db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor,detail:cleanText(p.detail,300)});return {ok:true};}
 export function overlaps(a,b){return a.start<b.end&&a.end>b.start;}
@@ -135,7 +138,13 @@ export function seed(now=new Date()){
  const names=['Martín Rodríguez','Lucía Fernández','Diego Suárez','Camila Torres','Pablo Méndez','Sofía García','Nicolás Ríos','Valentina López'];
  const cars=[['Volkswagen','Gol','AB123CD'],['Toyota','Corolla','AC456EF'],['Ford','Focus','AD789GH'],['Peugeot','208','AE234IJ'],['Renault','Sandero','AF567KL'],['Fiat','Cronos','AG890MN'],['Chevrolet','Onix','AH345OP'],['Honda','Fit','AI678QR']];
  names.forEach((name,i)=>{db.clients.push({id:'c'+i,name,phone:'54911000000'+String(i).padStart(2,'0'),consent:i!==4,consentOps:i!==4,consentMarketing:i<3,consentAt:now.toISOString(),createdAt:now.toISOString()});db.vehicles.push({id:'v'+i,clientId:'c'+i,brand:cars[i][0],model:cars[i][1],plate:cars[i][2],year:2017+i%6});const d=new Date(now);d.setDate(d.getDate()-(i<4?20+i*8:95+(i-4)*35));db.history.push({id:'h'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:SERVICES[i].id,date:d.toISOString(),km:42000+i*7500,notes:'Servicio de demostración. Control general realizado.',appointmentId:''});});
- const date=nextWorkday(localDate(now));[0,1,2,3].forEach((i)=>{const time=['09:00','10:30','12:00','15:00'][i],start=new Date(date+'T'+time+':00-03:00').toISOString();db.appointments.push({id:'a'+i,requestId:'seed000'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:SERVICES[i===2?3:i].id,time,start,end:new Date(new Date(start).getTime()+SERVICES[i===2?3:i].duration*60000).toISOString(),status:i===3?'requested':'confirmed',notes:'',createdAt:now.toISOString(),eventId:'',syncStatus:'demo'});});
- const waitDate=nextWorkday(date);for(let i=0;i<9;i++){const time=String(9+i).padStart(2,'0')+':00',start=new Date(waitDate+'T'+time+':00-03:00').toISOString(),ci=i%4;db.appointments.push({id:'b'+i,requestId:'seedB000'+i,clientId:'c'+ci,vehicleId:'v'+ci,serviceId:'aceite',time,start,end:new Date(new Date(start).getTime()+60000*60).toISOString(),status:'confirmed',notes:'',createdAt:now.toISOString(),eventId:'',syncStatus:'demo'});}
+ // #17: agenda de demo generada con el propio motor de disponibilidad (slots legítimos del catálogo, sin solapamientos ni feriados).
+ // available() exige un servicio: se usa el de menor duración para enumerar la grilla base del día.
+ const shortest=db.services.reduce((a,b)=>b.duration<a.duration?b:a);
+ const daySlots=(date)=>available(db,date,shortest.id,now).map(sl=>({...sl,date}));
+ const date=nextWorkday(localDate(now));let pool=daySlots(date);[0,1,2,3].forEach((i)=>{const sl=pool.shift();if(!sl)return;db.appointments.push({id:'a'+i,requestId:'seed000'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:sl.serviceId,time:sl.time,start:sl.start,end:sl.end,status:i===3?'requested':'confirmed',notes:'',createdAt:now.toISOString(),eventId:'',syncStatus:'demo'});});
+ // Día saturado para la lista de espera: llenar TODOS los slots restantes del día siguiente hábil no feriado.
+ let waitDate=date;do{waitDate=nextWorkday(waitDate);}while((db.config.holidays||[]).includes(waitDate)||!daySlots(waitDate).length);
+ for(const sl of daySlots(waitDate)){const i=db.appointments.length,ci=i%4;db.appointments.push({id:'b'+i,requestId:'seedB000'+i,clientId:'c'+ci,vehicleId:'v'+ci,serviceId:sl.serviceId,time:sl.time,start:sl.start,end:sl.end,status:'confirmed',notes:'',createdAt:now.toISOString(),eventId:'',syncStatus:'demo'});}
  db.waitlist.push({id:'w0',clientId:'c6',serviceId:'aceite',date:waitDate,status:'active',createdAt:now.toISOString()});automate(db,now);return db;
 }

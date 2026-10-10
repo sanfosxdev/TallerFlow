@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 export const config={maxDuration:60};
-const publicActions=new Set(['catalog','slots','book','waitlist']);
+// #22: el gateway corre como módulo ESM aislado en Vercel (no puede importar src/domain.mjs con sintaxis de Apps Script),
+// pero esta lista ES el contrato ACTIONS de src/domain.mjs. Ante cualquier duda, allowed() del backend es la autoridad final.
+const publicActions=new Set(['catalog','slots','book','waitlist','health']); // espejo de ACTIONS.public (test de paridad en tests/domain.test.mjs)
 // Rate-limit de login en memoria por instancia (aproximación sin estado externo): 10 intentos / ventana de sliding de 15 min por IP.
 const LOGIN_WINDOW_MS=15*60*1000,LOGIN_MAX=10;const loginHits=new Map();let loginLastSweep=Date.now();
 function clientIp(req){const fwd=req.headers['x-forwarded-for']||'';return String(fwd.split(',')[0]).trim()||req.socket?.remoteAddress||'unknown';}

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SERVICES,CONFIG,seed,localDate,nextWorkday,normalizePhone,normalizePlate,available,booking,transition,automate,enqueue,allowed,dispatch,consentRequired,hasConsent} from '../src/domain.mjs';
+import {readFile} from 'node:fs/promises';
+import {SERVICES,CONFIG,ACTIONS,seed,localDate,nextWorkday,normalizePhone,normalizePlate,available,booking,transition,automate,enqueue,allowed,dispatch,consentRequired,hasConsent} from '../src/domain.mjs';
 const now=new Date('2026-10-03T09:00:00-03:00');
 function blank(){return {config:{...CONFIG},services:SERVICES.map(x=>({...x})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]};}
 function payload(extra={}){return {requestId:'request-12345678',name:'Ana Pérez',phone:'5491112345678',brand:'Toyota',model:'Corolla',year:2022,plate:'AB123CD',date:nextWorkday(localDate(now)),time:'09:00',serviceId:'aceite',consent:true,...extra};}
@@ -98,11 +99,18 @@ test('la lista de espera exige permiso, un día laboral válido y un servicio si
  assert.throws(()=>dispatch(blank(),'waitlist',p,now),/horarios disponibles/);
 });
 
-test('la frontera de acciones públicas es restrictiva',()=>{
+test('la frontera de acciones públicas es restrictiva (#22 ACTIONS compartida)',async()=>{
  // #23: health y automate se vuelven seguras en modo público (sólo conteos / reintentos idempotentes).
  for(const a of ['catalog','slots','book','waitlist','health','automate'])assert.equal(allowed(a,'public'),true);
  for(const a of ['snapshot','transition','message','consent','audit','waitlistClose'])assert.equal(allowed(a,'public'),false,a+' no debe ser pública');
  assert.equal(allowed('snapshot','admin'),true);
+ // El contrato ACTIONS es la única fuente; toda acción administrada debe estar declarada en adminOnly.
+ for(const a of ['snapshot','transition','message','consent','audit','waitlistClose'])assert.ok(ACTIONS.adminOnly.has(a),a+' falta en ACTIONS.adminOnly');
+ // Paridad con el espejo del gateway Vercel (api/index.js no puede importar el dominio; este test previene drift).
+ const src=await readFile(new URL('../api/index.js',import.meta.url),'utf8');
+ const m=src.match(/const publicActions=new Set\(\[([^\]]+)\]/);assert.ok(m,'El gateway debe declarar publicActions');
+ const gateway=m[1].split(',').map(s=>s.trim().replace(/'/g,''));
+ assert.deepEqual(gateway.sort(),[...ACTIONS.public].sort(),'publicActions del gateway diverge de ACTIONS.public');
 });
 
 test('feriados configurables bloquean horarios, reservas y lista de espera',()=>{
@@ -212,4 +220,14 @@ test('health expone la cola de sincronización de Calendar y mensajes pendientes
  assert.equal(h.calendarBacklog,2,'los eventos con error cuentan como backlog');
  db.appointments.forEach(a=>a.syncStatus='synced');
  assert.equal(dispatch(db,'health',{},{},'admin').calendarBacklog,0,'la cola drenó');
+});
+
+test('#17 los datos semilla son consistentes con el motor de disponibilidad',()=>{
+ const db=seed(now);const active=db.appointments.filter(a=>['requested','confirmed'].includes(a.status));
+ // sin solapamientos entre turnos activos
+ for(let i=0;i<active.length;i++)for(let j=i+1;j<active.length;j++)assert.ok(!(active[i].start<active[j].end&&active[i].end>active[j].start),'turnos de demo solapados');
+ // ningún turno cae en feriado o día no hábil
+ for(const a of active){const d=localDate(new Date(a.start));assert.ok(!(db.config.holidays||[]).includes(d),'turno de demo en feriado');assert.ok(db.config.weekdays.includes(new Date(d+'T12:00:00-03:00').getDay()),'turno de demo en día no hábil');}
+ // el día de la lista de espera está realmente saturado (motivo del waitlist)
+ const w=db.waitlist[0];assert.equal(available(db,w.date,'aceite',now).length,0,'el día del waitlist debe estar lleno');
 });
