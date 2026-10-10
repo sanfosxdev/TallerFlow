@@ -19,7 +19,7 @@ export function normalizePhone(v){const p=String(v??'').replace(/\D/g,'');if(p.l
 export function normalizePlate(v){let p=String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!/^[A-Z]{3}\d{3}$|^[A-Z]{2}\d{3}[A-Z]{2}$/.test(p))throw new Error('Patente inválida. Usá ABC123 o AB123CD.');return p;}
 export function allowed(action,role){return role==='admin'||['catalog','slots','book','waitlist'].includes(action);}
 /** Auditoría append-only: acciones sensibles y mutaciones excepcionales (p. ej. borrado de PII). */
-export function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor:p.actor==='admin'?'admin':'public',detail:cleanText(p.detail,300)});return {ok:true};}
+export function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];const actor=['admin','public'].includes(p.actor)?p.actor:'system';db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor,detail:cleanText(p.detail,300)});return {ok:true};}
 export function overlaps(a,b){return a.start<b.end&&a.end>b.start;}
 export function available(db,date,serviceId,now=new Date()){
  const service=db.services.find(s=>s.id===serviceId); if(!service)throw new Error('Servicio inexistente.');

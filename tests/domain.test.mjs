@@ -121,7 +121,7 @@ test('automate expira solicitudes requested vencidas, libera slots pasados y no 
  // Un slot pasado ya no bloquea: available lo filtra por now igualmente.
  assert.ok(!available(db,payload().date,'aceite',late).some(s=>s.time==='09:00'));
  // Solicitud futura NO vence: invariante 2 (sólo administración confirma/cancela turnos vigentes).
- const db2=blank();booking(db2,payload({requestId:'request-99887766'}),now);
+ const db2=blank();booking(db2,{...payload(),date:nextWorkday(localDate(new Date(now.getTime()+5*86400000))),requestId:'request-99887766'},now);
  automate(db2,new Date(now.getTime()+3600000));
  assert.equal(db2.appointments[0].status,'requested');
  // El admin puede cancelar explícitamente una solicitud pendiente.
@@ -139,6 +139,7 @@ test('auditoría append-only registra transiciones, consentimientos y mensajes c
  assert.equal(db.audit.find(x=>x.action==='consent').detail,'revocado');
  // Datos legados sin tabla audit no rompen el dominio.
  const legacy={...blank()};delete legacy.audit;
- assert.equal(transition(legacy,{id:res.id,status:'completed',actor:'admin'},now).ok,true);
+ const legacyRes=booking(legacy,payload({requestId:'request-55443322'}),now);
+ assert.equal(transition(legacy,{id:legacyRes.id,status:'confirmed',actor:'admin'},now).ok,true);
  assert.equal(legacy.audit.length,1);
 });

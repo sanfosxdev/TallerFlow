@@ -11,7 +11,7 @@ const SERVICES = [
  {id:'electricidad',name:'Electricidad',category:'Electricidad',duration:90,price:35000,icon:'Zap',description:'Revisión de luces, cableado y alternador.'},
  {id:'previaje',name:'Revisión pre-viaje',category:'Seguridad',duration:90,price:40000,icon:'Route',description:'Un chequeo integral antes de salir a la ruta.'}
 ];
-const CONFIG={name:'TallerFlow',phone:'5491100000000',address:'Av. del Taller 123 · Buenos Aires',timezone:'America/Argentina/Buenos_Aires',open:9,close:18,weekdays:[1,2,3,4,5],slotMinutes:30,horizon:60,capacity:1};
+const CONFIG={name:'TallerFlow',phone:'5491100000000',address:'Av. del Taller 123 · Buenos Aires',timezone:'America/Argentina/Buenos_Aires',open:9,close:18,weekdays:[1,2,3,4,5],holidays:['2026-12-24','2026-12-25','2026-12-31','2027-01-01'],requestExpireHours:48,capacity:1,slotMinutes:30,horizon:60};
 function uid(){return 'tf_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);}
 function localDate(d=new Date()){if(typeof Utilities!=='undefined')return Utilities.formatDate(d,CONFIG.timezone,'yyyy-MM-dd');return new Intl.DateTimeFormat('en-CA',{timeZone:CONFIG.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(d);}
 function nextWorkday(date=localDate()){let d=new Date(date+'T12:00:00-03:00');d.setDate(d.getDate()+1);while(!CONFIG.weekdays.includes(d.getDay()))d.setDate(d.getDate()+1);return localDate(d);}
@@ -19,12 +19,15 @@ function cleanText(v,max=120){return String(v??'').trim().slice(0,max);}
 function normalizePhone(v){const p=String(v??'').replace(/\D/g,'');if(p.length<10||p.length>15)throw new Error('Ingresá un teléfono con código de país (10 a 15 dígitos).');return p;}
 function normalizePlate(v){let p=String(v??'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!/^[A-Z]{3}\d{3}$|^[A-Z]{2}\d{3}[A-Z]{2}$/.test(p))throw new Error('Patente inválida. Usá ABC123 o AB123CD.');return p;}
 function allowed(action,role){return role==='admin'||['catalog','slots','book','waitlist'].includes(action);}
+/** Auditoría append-only: acciones sensibles y mutaciones excepcionales (p. ej. borrado de PII). */
+function audit(db,p,now=new Date()){if(!Array.isArray(db.audit))db.audit=[];const actor=['admin','public'].includes(p.actor)?p.actor:'system';db.audit.push({id:uid(),at:now.toISOString(),action:cleanText(p.action,40),targetId:cleanText(p.targetId,60),actor,detail:cleanText(p.detail,300)});return {ok:true};}
 function overlaps(a,b){return a.start<b.end&&a.end>b.start;}
 function available(db,date,serviceId,now=new Date()){
  const service=db.services.find(s=>s.id===serviceId); if(!service)throw new Error('Servicio inexistente.');
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error('Fecha inválida.');
  const day=new Date(date+'T12:00:00-03:00'); if(Number.isNaN(+day)||localDate(day)!==date)throw new Error('Fecha inválida.');
  if(!db.config.weekdays.includes(day.getDay()))return [];
+ if((db.config.holidays||[]).includes(date))return [];
  const latest=new Date(now);latest.setDate(latest.getDate()+db.config.horizon);if(date>localDate(latest))return [];
  const slots=[];for(let m=db.config.open*60;m+service.duration<=db.config.close*60;m+=db.config.slotMinutes){
  const hh=String(Math.floor(m/60)).padStart(2,'0'),mm=String(m%60).padStart(2,'0');
@@ -40,6 +43,7 @@ function enqueue(db,key,clientId,kind,text,appointmentId=''){
 }
 function booking(db,p,now=new Date()){
  const old=db.appointments.find(a=>a.requestId===p.requestId);if(old)return {id:old.id,status:old.status,start:old.start};
+ if((db.config.holidays||[]).includes(p.date))throw new Error('Ese día es feriado y el taller no atiende. Elegí otra fecha.');
  if(!/^[\w-]{8,100}$/.test(p.requestId||''))throw new Error('Identificador de reserva inválido.');
  const name=cleanText(p.name,80),brand=cleanText(p.brand,60),model=cleanText(p.model,60),phone=normalizePhone(p.phone),plate=normalizePlate(p.plate),year=Number(p.year);
  if(name.length<2||!brand||!model||!Number.isInteger(year)||year<1950||year>new Date().getFullYear()+1)throw new Error('Revisá nombre, marca, modelo y año.');
@@ -55,14 +59,17 @@ function booking(db,p,now=new Date()){
 }
 function automate(db,now=new Date()){
  const before=db.messages.length;
+ // Solicitudes requested sin gestionar cuyo horario ya pasó liberan el slot (invariante 2 intacta: sólo vence turnos futuros).
+ for(const a of db.appointments){if(a.status!=='requested'||new Date(a.end)>now)continue;a.status='expired';a.syncStatus='none';audit(db,{action:'transition',targetId:a.id,actor:'system',detail:'requested→expired (vencimiento automático)'},now);}
  for(const a of db.appointments){if(a.status!=='confirmed')continue;const hours=(new Date(a.start)-now)/3600000;if(hours>0&&hours<=25)enqueue(db,'rem24:'+a.id,a.clientId,'Recordatorio',`Hola ${db.clients.find(c=>c.id===a.clientId)?.name}, te esperamos el ${localDate(new Date(a.start))} a las ${new Date(a.start).toLocaleTimeString('es-AR',{timeZone:CONFIG.timezone,hour:'2-digit',minute:'2-digit'})}. Avisanos si necesitás reprogramar.`,a.id);}
  for(const c of db.clients){const visits=db.history.filter(h=>h.clientId===c.id).sort((a,b)=>b.date.localeCompare(a.date));const last=visits[0];if(!last||db.appointments.some(a=>a.clientId===c.id&&['requested','confirmed'].includes(a.status)&&new Date(a.end)>now))continue;const days=Math.floor((now-new Date(last.date))/86400000);for(const threshold of [90,180])if(days>=threshold&&!(threshold===90&&days>=180))enqueue(db,`rec${threshold}:${c.id}:${last.id}`,c.id,`Recuperación ${threshold} días`,`Hola ${c.name}, pasaron más de ${threshold} días desde tu último servicio. ¿Querés que coordinemos una revisión?`);}
  return {created:db.messages.length-before};
 }
 function transition(db,p,now=new Date()){
  const a=db.appointments.find(a=>a.id===p.id);if(!a)throw new Error('Turno inexistente.');
- const valid={requested:['confirmed','cancelled'],confirmed:['completed','cancelled','no_show'],completed:[],cancelled:[],no_show:[]};
+ const valid={requested:['confirmed','cancelled','expired'],confirmed:['completed','cancelled','no_show'],completed:[],cancelled:[],no_show:[],expired:[]};
  if(a.status===p.status)return {ok:true};if(!valid[a.status]?.includes(p.status))throw new Error('Cambio de estado no permitido.');
+ audit(db,{action:'transition',targetId:a.id,actor:p.actor,detail:`${a.status}→${p.status}`},now);
  const client=db.clients.find(c=>c.id===a.clientId),service=db.services.find(s=>s.id===a.serviceId);
  a.status=p.status;a.syncStatus=p.status==='confirmed'?'pending':(a.eventId?'pending':'none');
  if(p.status==='confirmed')enqueue(db,'confirm:'+a.id,a.clientId,'Confirmación',`Hola ${client.name}, tu turno de ${service.name} está confirmado para el ${localDate(new Date(a.start))} a las ${a.time}. ¡Te esperamos!`,a.id);
@@ -79,17 +86,18 @@ function transition(db,p,now=new Date()){
  enqueue(db,`gap:${a.id}:${w.id}`,wc.id,'Hueco disponible',`Hola ${wc.name}, se liberó un lugar para ${service.name} el ${w.date} a las ${a.time}. Respondé si te interesa; el horario no queda reservado hasta completar la solicitud.`);
  }}return {ok:true};
 }
-function dispatch(db,action,p={},now=new Date()){
+function dispatch(db,action,p={},now=new Date(),role='public'){
  if(action==='catalog')return {config:db.config,services:db.services};
  if(action==='slots')return available(db,p.date,p.serviceId,now);
  if(action==='book')return booking(db,p,now);
  if(action==='snapshot')return db;
- if(action==='transition')return transition(db,p,now);
+ if(action==='transition')return transition(db,{...p,actor:role},now);
  if(action==='automate')return automate(db,now);
- if(action==='consent'){const c=db.clients.find(c=>c.id===p.id);if(!c)throw new Error('Cliente inexistente.');c.consent=p.consent===true;c.consentAt=now.toISOString();if(!c.consent)db.messages.filter(m=>m.clientId===c.id&&['pending','opened'].includes(m.status)).forEach(m=>m.status='void');return {ok:true};}
- if(action==='message'){const m=db.messages.find(m=>m.id===p.id);if(!m)throw new Error('Mensaje inexistente.');if(!db.clients.find(c=>c.id===m.clientId)?.consent)throw new Error('Cliente sin consentimiento.');if(!['opened','sent'].includes(p.status)||['void','sent'].includes(m.status))throw new Error('Estado no permitido.');m.status=p.status;if(p.status==='sent')m.sentAt=now.toISOString();return {ok:true};}
+ if(action==='consent'){const c=db.clients.find(c=>c.id===p.id);if(!c)throw new Error('Cliente inexistente.');c.consent=p.consent===true;c.consentAt=now.toISOString();audit(db,{action:'consent',targetId:c.id,actor:role,detail:p.consent===true?'otorgado':'revocado'},now);if(!c.consent)db.messages.filter(m=>m.clientId===c.id&&['pending','opened'].includes(m.status)).forEach(m=>m.status='void');return {ok:true};}
+ if(action==='message'){const m=db.messages.find(m=>m.id===p.id);if(!m)throw new Error('Mensaje inexistente.');if(!db.clients.find(c=>c.id===m.clientId)?.consent)throw new Error('Cliente sin consentimiento.');if(!['opened','sent'].includes(p.status)||['void','sent'].includes(m.status))throw new Error('Estado no permitido.');m.status=p.status;if(p.status==='sent')m.sentAt=now.toISOString();audit(db,{action:'message',targetId:m.id,actor:role,detail:p.status},now);return {ok:true};}
  if(action==='waitlist'){
  const phone=normalizePhone(p.phone),name=cleanText(p.name,80);if(name.length<2||p.consent!==true)throw new Error('Nombre y consentimiento obligatorios.');if(!db.services.some(s=>s.id===p.serviceId)||!/^\d{4}-\d{2}-\d{2}$/.test(p.date))throw new Error('Servicio o fecha inválidos.');
+ if((db.config.holidays||[]).includes(p.date))throw new Error('Ese día es feriado y el taller no atiende. Elegí otra fecha.');
  const waitDay=new Date(p.date+'T12:00:00-03:00'),maxDay=new Date(now);maxDay.setDate(maxDay.getDate()+db.config.horizon);
  if(localDate(waitDay)!==p.date||p.date<localDate(now)||p.date>localDate(maxDay)||!db.config.weekdays.includes(waitDay.getDay()))throw new Error('Elegí un día hábil disponible dentro de los próximos 60 días.');
  if(available(db,p.date,p.serviceId,now).length)throw new Error('Ese día todavía tiene horarios disponibles. Elegí uno o probá otra fecha.');
@@ -97,10 +105,11 @@ function dispatch(db,action,p={},now=new Date()){
  let item=db.waitlist.find(w=>w.clientId===c.id&&w.date===p.date&&w.serviceId===p.serviceId&&w.status==='active');if(!item){item={id:uid(),clientId:c.id,serviceId:p.serviceId,date:p.date,status:'active',createdAt:now.toISOString()};db.waitlist.push(item);}return {ok:true,id:item.id};
  }
  if(action==='waitlistClose'){const w=db.waitlist.find(w=>w.id===p.id);if(!w)throw new Error('Registro inexistente.');w.status='closed';return {ok:true};}
+ if(action==='audit')return audit(db,p,now);
  throw new Error('Acción no permitida.');
 }
 function seed(now=new Date()){
- const db={config:{...CONFIG},services:SERVICES.map(s=>({...s})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[]};
+ const db={config:{...CONFIG},services:SERVICES.map(s=>({...s})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]};
  const names=['Martín Rodríguez','Lucía Fernández','Diego Suárez','Camila Torres','Pablo Méndez','Sofía García','Nicolás Ríos','Valentina López'];
  const cars=[['Volkswagen','Gol','AB123CD'],['Toyota','Corolla','AC456EF'],['Ford','Focus','AD789GH'],['Peugeot','208','AE234IJ'],['Renault','Sandero','AF567KL'],['Fiat','Cronos','AG890MN'],['Chevrolet','Onix','AH345OP'],['Honda','Fit','AI678QR']];
  names.forEach((name,i)=>{db.clients.push({id:'c'+i,name,phone:'54911000000'+String(i).padStart(2,'0'),consent:i!==4,consentAt:now.toISOString(),createdAt:now.toISOString()});db.vehicles.push({id:'v'+i,clientId:'c'+i,brand:cars[i][0],model:cars[i][1],plate:cars[i][2],year:2017+i%6});const d=new Date(now);d.setDate(d.getDate()-(i<4?20+i*8:95+(i-4)*35));db.history.push({id:'h'+i,clientId:'c'+i,vehicleId:'v'+i,serviceId:SERVICES[i].id,date:d.toISOString(),km:42000+i*7500,notes:'Servicio de demostración. Control general realizado.',appointmentId:''});});
