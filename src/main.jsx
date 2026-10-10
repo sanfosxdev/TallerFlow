@@ -2,7 +2,7 @@ import React,{useState,useEffect,useRef} from 'react';import{createRoot}from'rea
 import{ArrowUpRight,ArrowRight,Check,Plus,Search,Menu,X,CalendarDays,Users,LayoutDashboard,MessageCircle,Wrench,Clock,ChevronLeft,ChevronRight,LogOut,Car,ShieldCheck,Droplets,Settings,ScanLine,BatteryCharging,Wind,MoveHorizontal,CircleDot,Zap,Route,RefreshCw,History,ExternalLink,CheckCircle2,Bell,ClipboardList}from'lucide-react';
 import{api,DEMO,resetDemo}from'./client.mjs';import{SERVICES,CONFIG,nextWorkday,localDate,uid}from'./domain.mjs';import './style.css';
 const ICONS={Droplets,ShieldCheck,Settings,ScanLine,BatteryCharging,Wind,MoveHorizontal,CircleDot,Zap,Route};
-const STATUS={requested:'Por confirmar',confirmed:'Confirmado',completed:'Finalizado',cancelled:'Cancelado',no_show:'No asistió'};
+const STATUS={requested:'Por confirmar',confirmed:'Confirmado',completed:'Finalizado',cancelled:'Cancelado',no_show:'No asistió',expired:'Vencido'};
 const MONEY=new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0});
 function Brand(){return <span className="brand"><span className="brand-icon"><Wrench size={19}/></span>Taller<span>Flow</span><span className="brand-dot">®</span></span>}
 function App(){const[page,setPage]=useState(location.hash.startsWith('#panel')?'panel':'home'),[config,setConfig]=useState(CONFIG),[services,setServices]=useState(SERVICES),[booking,setBooking]=useState(null),[toast,setToast]=useState('');

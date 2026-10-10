@@ -5,7 +5,8 @@ const TABLES={
  appointments:['id','requestId','clientId','vehicleId','serviceId','time','start','end','status','notes','createdAt','eventId','syncStatus'],
  history:['id','appointmentId','clientId','vehicleId','serviceId','date','km','notes'],
  messages:['id','key','clientId','kind','text','appointmentId','status','createdAt','sentAt'],
- waitlist:['id','clientId','serviceId','date','status','createdAt']
+ waitlist:['id','clientId','serviceId','date','status','createdAt'],
+ audit:['id','at','action','targetId','actor','detail']
 };
 function props(){return PropertiesService.getScriptProperties();}
 function spreadsheet(){return SpreadsheetApp.openById(props().getProperty('SPREADSHEET_ID'));}
@@ -23,18 +24,18 @@ function doPost(e){try{
  const request=JSON.parse(p);if(request.v!==1||Math.abs(Date.now()-request.ts)>120000||!request.nonce||!['public','admin'].includes(request.role)||!allowed(request.action,request.role))throw new Error('Solicitud no autorizada.');
  const data=locked(()=>{
  const cache=CacheService.getScriptCache();if(cache.get('nonce:'+request.nonce))throw new Error('Solicitud repetida.');cache.put('nonce:'+request.nonce,'1',600);
- const db=readDb();
+ const db=readDb();if(!Array.isArray(db.audit))db.audit=[];
  if(request.role==='public'&&['book','waitlist'].includes(request.action)){
  const phone=normalizePhone(request.payload.phone);const key='rate:'+phone+':'+localDate();const count=Number(cache.get(key)||0);if(count>=12)throw new Error('Demasiados intentos. Contactá al taller.');cache.put(key,String(count+1),21600);
  const active=db.appointments.filter(a=>a.clientId===db.clients.find(c=>c.phone===phone)?.id&&['requested','confirmed'].includes(a.status));const retry=db.appointments.some(a=>a.requestId===request.payload.requestId);
  if(request.action==='book'&&active.length>=3&&!retry)throw new Error('Ya tenés varias solicitudes. Contactá al taller.');
  }
- const result=dispatch(db,request.action,request.payload);if(!['catalog','slots','snapshot'].includes(request.action))saveDb(db);return result;
+ const result=dispatch(db,request.action,request.payload,new Date(),request.role);if(!['catalog','slots','snapshot'].includes(request.action))saveDb(db);return result;
  });return response({ok:true,data});
  }catch(err){console.error(err);return response({ok:false,error:err.message||'Error interno.'});}}
-function setup(){locked(()=>{const ss=spreadsheet();for(const name in TABLES){let sh=ss.getSheetByName(name)||ss.insertSheet(name);sh.getRange(1,1,1,TABLES[name].length).setValues([TABLES[name]]);sh.setFrozenRows(1);sh.getRange(1,1,1,TABLES[name].length).setFontWeight('bold').setBackground('#d9ead3');}if(ss.getSheetByName('config').getLastRow()<2)saveDb({config:CONFIG,services:SERVICES,clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[]});});installTriggers();}
+function setup(){locked(()=>{const ss=spreadsheet();for(const name in TABLES){let sh=ss.getSheetByName(name)||ss.insertSheet(name);sh.getRange(1,1,1,TABLES[name].length).setValues([TABLES[name]]);sh.setFrozenRows(1);sh.getRange(1,1,1,TABLES[name].length).setFontWeight('bold').setBackground('#d9ead3');}if(ss.getSheetByName('config').getLastRow()<2)saveDb({config:CONFIG,services:SERVICES,clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]});});installTriggers();}
 function installTriggers(){for(const t of ScriptApp.getProjectTriggers())if(t.getHandlerFunction()==='scheduledRun')ScriptApp.deleteTrigger(t);ScriptApp.newTrigger('scheduledRun').timeBased().everyMinutes(15).create();}
-function scheduledRun(){try{locked(()=>{const db=readDb();automate(db);saveDb(db);});syncCalendar();notifyQueue();props().setProperty('LAST_RUN',new Date().toISOString());props().deleteProperty('LAST_ERROR');}catch(e){props().setProperty('LAST_ERROR',e.message);console.error(e);}}
+function scheduledRun(){try{locked(()=>{const db=readDb();if(!Array.isArray(db.audit))db.audit=[];automate(db);saveDb(db);});syncCalendar();notifyQueue();props().setProperty('LAST_RUN',new Date().toISOString());props().deleteProperty('LAST_ERROR');}catch(e){props().setProperty('LAST_ERROR',e.message);console.error(e);}}
 /** Calendar is secondary. Sheet slots remain the source of truth. */
 function syncCalendar(){const id=props().getProperty('CALENDAR_ID');if(!id)return;const calendar=CalendarApp.getCalendarById(id);if(!calendar)throw new Error('Calendar no accesible.');
  // Lock avoids concurrent trigger reconciliation. Calendar errors never invalidate a booking.
