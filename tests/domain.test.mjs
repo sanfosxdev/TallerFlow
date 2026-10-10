@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {SERVICES,CONFIG,seed,localDate,nextWorkday,normalizePhone,normalizePlate,available,booking,transition,automate,enqueue,allowed,dispatch} from '../src/domain.mjs';
 const now=new Date('2026-10-03T09:00:00-03:00');
-function blank(){return {config:{...CONFIG},services:SERVICES.map(x=>({...x})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[]};}
+function blank(){return {config:{...CONFIG},services:SERVICES.map(x=>({...x})),clients:[],vehicles:[],appointments:[],history:[],messages:[],waitlist:[],audit:[]};}
 function payload(extra={}){return {requestId:'request-12345678',name:'Ana Pérez',phone:'5491112345678',brand:'Toyota',model:'Corolla',year:2022,plate:'AB123CD',date:nextWorkday(localDate(now)),time:'09:00',serviceId:'aceite',consent:true,...extra};}
 
 test('normaliza teléfonos y patentes argentinas y rechaza datos fuera de contrato',()=>{
@@ -96,6 +96,49 @@ test('la lista de espera exige permiso, un día laboral válido y un servicio si
 
 test('la frontera de acciones públicas es restrictiva',()=>{
  for(const a of ['catalog','slots','book','waitlist'])assert.equal(allowed(a,'public'),true);
- for(const a of ['snapshot','transition','message','automate','consent'])assert.equal(allowed(a,'public'),false);
+ for(const a of ['snapshot','transition','message','automate','consent'])assert.equal(a==='audit'?false:allowed(a,'public'),false);
  assert.equal(allowed('snapshot','admin'),true);
+});
+
+test('feriados configurables bloquean horarios, reservas y lista de espera',()=>{
+ const db=blank(),date=nextWorkday(localDate(now));
+ db.config.holidays=[date];
+ assert.deepEqual(available(db,date,'aceite',now),[],'el feriado no ofrece horarios');
+ assert.throws(()=>booking(db,payload(),now),/feriado/);
+ assert.throws(()=>dispatch(db,'waitlist',{name:'Bea Ramos',phone:'5491198765432',serviceId:'aceite',date,consent:true},now),/feriado/);
+ // Sin feriados el mismo día vuelve a ser operable.
+ db.config.holidays=[];
+ assert.ok(available(db,date,'aceite',now).length>0);
+});
+
+test('automate expira solicitudes requested vencidas, libera slots pasados y no toca turnos futuros',()=>{
+ const db=blank();const res=booking(db,payload(),now);
+ const late=new Date(now.getTime()+5*86400000);
+ const run=automate(db,late);
+ assert.equal(db.appointments[0].status,'expired');
+ assert.ok(db.audit.some(x=>x.actor==='system'&&x.detail.includes('expired')));
+ assert.equal(run.created,0,'la expiración no genera mensajes al cliente');
+ // Un slot pasado ya no bloquea: available lo filtra por now igualmente.
+ assert.ok(!available(db,payload().date,'aceite',late).some(s=>s.time==='09:00'));
+ // Solicitud futura NO vence: invariante 2 (sólo administración confirma/cancela turnos vigentes).
+ const db2=blank();booking(db2,payload({requestId:'request-99887766'}),now);
+ automate(db2,new Date(now.getTime()+3600000));
+ assert.equal(db2.appointments[0].status,'requested');
+ // El admin puede cancelar explícitamente una solicitud pendiente.
+ assert.equal(transition(db2,{id:db2.appointments[0].id,status:'cancelled'},now).ok,true);
+});
+
+test('auditoría append-only registra transiciones, consentimientos y mensajes con actor',()=>{
+ const db=blank(),res=booking(db,payload(),now);
+ transition(db,{id:res.id,status:'confirmed',actor:'admin'},now);
+ dispatch(db,'consent',{id:db.clients[0].id,consent:false},now,'admin');
+ const kinds=db.audit.map(x=>x.action);
+ assert.ok(kinds.includes('transition')&&kinds.includes('consent'));
+ assert.equal(db.audit.find(x=>x.action==='transition').detail,'requested→confirmed');
+ assert.equal(db.audit.find(x=>x.action==='transition').actor,'admin');
+ assert.equal(db.audit.find(x=>x.action==='consent').detail,'revocado');
+ // Datos legados sin tabla audit no rompen el dominio.
+ const legacy={...blank()};delete legacy.audit;
+ assert.equal(transition(legacy,{id:res.id,status:'completed',actor:'admin'},now).ok,true);
+ assert.equal(legacy.audit.length,1);
 });
